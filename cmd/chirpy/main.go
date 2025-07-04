@@ -52,6 +52,7 @@ func main() {
 	createChirpHandler := http.HandlerFunc(conf.CreateChirpHandler)
 	getAllChirpHandler := http.HandlerFunc(conf.GetAllChirpsHandler)
 	getAChirpHandler := http.HandlerFunc(conf.GetAChirpHandler)
+	loginUserHandler := http.HandlerFunc(conf.LoginUserHandler)
 
 	sMux := http.NewServeMux()
 
@@ -62,6 +63,7 @@ func main() {
 	sMux.Handle("POST /api/chirps",         createChirpHandler)
 	sMux.Handle("GET /api/chirps",          getAllChirpHandler)
 	sMux.Handle("GET /api/chirps/{ChirpID}", getAChirpHandler)
+	sMux.Handle("POST /api/login",          loginUserHandler)
 	sMux.HandleFunc("GET /admin/metrics",   conf.adminHandler)
 	sMux.HandleFunc("POST /admin/reset",    conf.adminResetHandler)
 

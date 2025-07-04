@@ -4,6 +4,7 @@ import (
 	"log"
 	"fmt"
 	"strings"
+	"time"
 	"errors"
 	"net/http"
 	"encoding/json"
@@ -12,6 +13,7 @@ import (
 	"github.com/google/uuid"
 
 	"github.com/dubbersthehoser/httpserver/internal/database"
+	"github.com/dubbersthehoser/httpserver/internal/auth"
 )
 
 func somethingError(err error, w http.ResponseWriter) bool {
@@ -25,6 +27,20 @@ func somethingError(err error, w http.ResponseWriter) bool {
 	}
 	return false
 }
+
+func fatalError(err error, w http.ResponseWriter) bool {
+	if err != nil {
+		w.WriteHeader(http.StatusInternalServerError)
+		_, err = w.Write([]byte(`{"error":"Ouch!! Going down )-:"}`))
+		if err != nil {
+			log.Fatal(err)
+		}
+		log.Fatal("Error: %s", err)
+		return true
+	}
+	return false
+}
+
 
 func (a *apiConfig) adminHandler(w http.ResponseWriter, r *http.Request) {
 	r.Header.Add("Content-Type", "text/html; charset=utf-8")
@@ -75,6 +91,7 @@ func (a *apiConfig) addUserHandler(w http.ResponseWriter, r *http.Request) {
 
 	type params struct { 
 		Email string `json:"email"`
+		Password string `json:"password"`
 	}
 	
 	p := params{}
@@ -85,20 +102,107 @@ func (a *apiConfig) addUserHandler(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	user, err := a.DBQ.CreateUser(r.Context(), p.Email)
+	passhash, err := auth.HashPassword(p.Password)
+	if somethingError(err, w) {
+		log.Printf("unable to hash password: %s", p.Password)
+		return
+	}
+
+	qParams := database.CreateUserParams{
+		Email: p.Email,
+		HashedPassword: passhash,
+
+	}
+
+	user, err := a.DBQ.CreateUser(r.Context(), qParams)
 	if somethingError(err, w) {
 		log.Printf("unable to create user: %#v", err)
 		return
 	}
 
-	jdata, err := json.Marshal(&user)
+	type RUser struct {
+		ID uuid.UUID `json:"id"`
+		CreatedAt time.Time `json:"created_at"`
+		UpdatedAt time.Time `json:"updated_at"`
+		Email string `json:"email"`
+	}
+	ruser := RUser{
+		ID: user.ID,
+		CreatedAt: user.CreatedAt,
+		UpdatedAt: user.UpdatedAt,
+		Email: user.Email,
+	}
+
+	jdata, err := json.Marshal(&ruser)
 	if somethingError(err, w) {
-		log.Printf(" unable to marshal user json: %#v", user)
+		log.Printf("unable to marshal user json: %#v", ruser)
 		return
 	}
 
 	w.WriteHeader(http.StatusCreated)
 	_, err = w.Write(jdata)
+	if err != nil {
+		log.Fatal(err)
+	}
+}
+
+func (a *apiConfig) LoginUserHandler(w http.ResponseWriter, r *http.Request) {
+	type params struct {
+		Email string `json:"email"`
+		Password string `json:"password"`
+	}
+
+	p := params{}
+	decoder := json.NewDecoder(r.Body)
+	err := decoder.Decode(&p)
+	if somethingError(err, w) {
+		log.Printf("unable to decode: %s", r.Body)
+		return
+	}
+
+	user, err := a.DBQ.GetUserByEmailWithPassword(r.Context(), p.Email)
+	if errors.Is(err, sql.ErrNoRows) {
+		w.WriteHeader(http.StatusNotFound)
+		_, err = w.Write([]byte(`{"error": "User not found"}`))
+		if err != nil {
+			log.Fatal(err)
+		}
+		return
+	} else if fatalError(err, w) {
+		return
+	}
+
+	if err := auth.CheckPasswordHash(user.HashedPassword, p.Password); err != nil {
+		log.Printf("login: %s != %s", user.HashedPassword, p.Password)
+		w.WriteHeader(http.StatusUnauthorized)
+		_, err = w.Write([]byte(`{"error": "Invalid password"}`))
+		if err != nil {
+			log.Fatal(err)
+		}
+		return
+	}
+
+	type RUser struct {
+		ID uuid.UUID `json:"id"`
+		CreatedAt time.Time `json:"created_at"`
+		UpdatedAt time.Time `json:"updated_at"`
+		Email string `json:"email"`
+	}
+	ruser := RUser{
+		ID: user.ID,
+		CreatedAt: user.CreatedAt,
+		UpdatedAt: user.UpdatedAt,
+		Email: user.Email,
+	}
+
+	jData, err := json.Marshal(&ruser)
+	if somethingError(err, w) {
+		log.Printf("unable to json.Marshal(user): %#v", ruser)
+		return
+	}
+
+	w.WriteHeader(http.StatusOK)
+	_, err = w.Write(jData)
 	if err != nil {
 		log.Fatal(err)
 	}
