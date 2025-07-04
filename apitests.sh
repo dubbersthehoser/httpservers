@@ -1,6 +1,0 @@
-
-set -e
-
-source .env
-
-
