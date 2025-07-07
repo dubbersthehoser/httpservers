@@ -16,6 +16,15 @@ import (
 	"github.com/dubbersthehoser/httpserver/internal/auth"
 )
 
+type ReturnToUser struct {
+	ID uuid.UUID `json:"id"`
+	CreatedAt time.Time `json:"created_at"`
+	UpdatedAt time.Time `json:"updated_at"`
+	Email string `json:"email"`
+	Token string `json:"token"`
+	RefreshToken string `json:"refresh_token"`
+}
+
 func somethingError(err error, w http.ResponseWriter) bool {
 	if err != nil {
 		w.WriteHeader(http.StatusInternalServerError)
@@ -23,6 +32,7 @@ func somethingError(err error, w http.ResponseWriter) bool {
 		if err != nil {
 			log.Fatal(err)
 		}
+		log.Println(err)
 		return true
 	}
 	return false
@@ -35,7 +45,7 @@ func fatalError(err error, w http.ResponseWriter) bool {
 		if err != nil {
 			log.Fatal(err)
 		}
-		log.Fatal("Error: %s", err)
+		log.Fatal(err)
 		return true
 	}
 	return false
@@ -120,13 +130,7 @@ func (a *apiConfig) addUserHandler(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	type RUser struct {
-		ID uuid.UUID `json:"id"`
-		CreatedAt time.Time `json:"created_at"`
-		UpdatedAt time.Time `json:"updated_at"`
-		Email string `json:"email"`
-	}
-	ruser := RUser{
+	ruser := ReturnToUser{
 		ID: user.ID,
 		CreatedAt: user.CreatedAt,
 		UpdatedAt: user.UpdatedAt,
@@ -150,6 +154,7 @@ func (a *apiConfig) LoginUserHandler(w http.ResponseWriter, r *http.Request) {
 	type params struct {
 		Email string `json:"email"`
 		Password string `json:"password"`
+	//	ExpiresInSeconds int64 `json:"expires_in_seconds"`
 	}
 
 	p := params{}
@@ -160,6 +165,7 @@ func (a *apiConfig) LoginUserHandler(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	// Get user from DB
 	user, err := a.DBQ.GetUserByEmailWithPassword(r.Context(), p.Email)
 	if errors.Is(err, sql.ErrNoRows) {
 		w.WriteHeader(http.StatusNotFound)
@@ -172,6 +178,7 @@ func (a *apiConfig) LoginUserHandler(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	// Check Password
 	if err := auth.CheckPasswordHash(user.HashedPassword, p.Password); err != nil {
 		log.Printf("login: %s != %s", user.HashedPassword, p.Password)
 		w.WriteHeader(http.StatusUnauthorized)
@@ -182,17 +189,44 @@ func (a *apiConfig) LoginUserHandler(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	type RUser struct {
-		ID uuid.UUID `json:"id"`
-		CreatedAt time.Time `json:"created_at"`
-		UpdatedAt time.Time `json:"updated_at"`
-		Email string `json:"email"`
+
+	//expires := time.Duration(p.ExpiresInSeconds)
+	//if expires == 0 || expires > time.Hour {
+	//	expires = time.Hour
+	//}
+
+
+	// Create JWT
+	jwtExpires := time.Hour
+	token, err := auth.MakeJWT(user.ID, a.JWTSecret, jwtExpires)
+	if somethingError(err, w) {
+		return
 	}
-	ruser := RUser{
+
+	// Create Refresh Token
+	refreshToken, err := auth.MakeRefreshToken()
+	if err != nil {
+		log.Panic(err)
+	}
+	refreshExpires := time.Now().Add((time.Hour * 24) * 60)
+
+	qParams := database.CreateRefreshTokenParams{
+		Token: refreshToken,
+		ExpiresAt: refreshExpires,
+		UserID: user.ID,
+	}
+	_, err = a.DBQ.CreateRefreshToken(r.Context(), qParams)
+	if somethingError(err, w) {
+		return
+	}
+
+	ruser := ReturnToUser{
 		ID: user.ID,
 		CreatedAt: user.CreatedAt,
 		UpdatedAt: user.UpdatedAt,
 		Email: user.Email,
+		Token: token,
+		RefreshToken: refreshToken,
 	}
 
 	jData, err := json.Marshal(&ruser)
@@ -206,6 +240,72 @@ func (a *apiConfig) LoginUserHandler(w http.ResponseWriter, r *http.Request) {
 	if err != nil {
 		log.Fatal(err)
 	}
+}
+
+func (a *apiConfig) RefreshToken(w http.ResponseWriter, r *http.Request) {
+	refreshToken, err := auth.GetBearerToken(r.Header)
+	if somethingError(err, w) {
+		return
+	}
+
+	tok, err := a.DBQ.GetRefreshToken(r.Context(), refreshToken)
+	if errors.Is(err, sql.ErrNoRows) {
+		w.WriteHeader(http.StatusUnauthorized)
+		_, err := w.Write([]byte(`{"error":"Unauthorized"}`))
+		if err != nil {
+			log.Fatal(err)
+		}
+		return
+	} else if somethingError(err, w) {
+		return
+	}
+
+	currTime := time.Now()
+	if !currTime.Before(tok.ExpiresAt) {
+		w.WriteHeader(http.StatusUnauthorized)
+		_, err := w.Write([]byte(`{"error":"Unauthorized"}`))
+		if err != nil {
+			log.Fatal(err)
+		}
+		return
+	}
+
+	if tok.RevokedAt.Valid {
+		w.WriteHeader(http.StatusUnauthorized)
+		_, err := w.Write([]byte(`{"error":"Unauthorized"}`))
+		if err != nil {
+			log.Fatal(err)
+		}
+		return
+	}
+
+	// Create New JWT
+	jwtExpires := time.Hour
+	token, err := auth.MakeJWT(tok.UserID, a.JWTSecret, jwtExpires)
+	if somethingError(err, w) {
+		return
+	}
+
+	r.Header.Add("Content-Type", "application/json; charset=utf-8")
+	ret := fmt.Sprintf(`{"token":"%s"}`, token)
+
+	w.WriteHeader(http.StatusOK)
+	_, err = w.Write([]byte(ret))
+	if err != nil {
+		log.Fatal(err)
+	}
+}
+func (a *apiConfig) RevokeToken(w http.ResponseWriter, r *http.Request) {
+	refreshToken, err := auth.GetBearerToken(r.Header)
+	if somethingError(err, w) {
+		return
+	}
+
+	err = a.DBQ.RevokeToken(r.Context(), refreshToken)
+	if somethingError(err, w) {
+		return
+	}
+	w.WriteHeader(http.StatusNoContent)
 }
 
 func (a *apiConfig) GetAChirpHandler(w http.ResponseWriter, r *http.Request) {
@@ -281,6 +381,25 @@ func (a *apiConfig) CreateChirpHandler(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	// Get JWT Token From Header
+	token, err := auth.GetBearerToken(r.Header)
+	if somethingError(err, w) {
+		return
+	}
+
+	// Validate JWT
+	uid, err := auth.ValidateJWT(token, a.JWTSecret)
+	if err != nil {
+		log.Printf("%s: token=%s\n\theader=", err, token, r.Header.Get("Authorization"))
+		w.WriteHeader(http.StatusUnauthorized)
+		_, err = w.Write([]byte(`{"error":"Invalid Token"}`))
+		if err != nil {
+			log.Fatal(err)
+		}
+		return
+	}
+
+	// Check The Size of Chirp
 	if len(p.Body) > ChirpSize {
 		w.WriteHeader(http.StatusBadRequest)
 		_, err = w.Write([]byte(`{"error":"Chirp is too long"}`))
@@ -289,39 +408,29 @@ func (a *apiConfig) CreateChirpHandler(w http.ResponseWriter, r *http.Request) {
 		}
 		return
 	}
-	
-	words := strings.Split(p.Body, " ")
 
+	// Senser Chirp
+	words := strings.Split(p.Body, " ")
 	for i, word := range words {
 		switch strings.ToLower(word) {
 			case "kerfuffle", "sharbert", "fornax":
 				words[i] = "****"
 		}
 	}
-
 	p.Body = strings.Join(words, " ")
 
-	userID, err := uuid.Parse(p.UserID)
-
-	if err != nil {
-		w.WriteHeader(http.StatusBadRequest)
-		_, err = w.Write([]byte(`{"error":"invalid user_id"}`))
-		return
-	}
-
+	// Create Chirp
 	qParams := database.CreateChirpParams{
-		UserID: userID,
+		UserID: uid,
 		Body: p.Body,
 	}
-
 	chirp, err := a.DBQ.CreateChirp(r.Context(), qParams)
-
 	if err != nil {
 		log.Fatal(err)
 	}
 
+	// Return to Client
 	data, _ :=  json.Marshal(&chirp)
-
 	w.WriteHeader(http.StatusCreated)
 	_, err = w.Write(data)
 	if err != nil {

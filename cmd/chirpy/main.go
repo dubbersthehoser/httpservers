@@ -21,6 +21,7 @@ type apiConfig struct {
 	fileserverHits atomic.Int32
 	DBQ *database.Queries
 	Platform string
+	JWTSecret string
 }
 
 func main() {
@@ -33,6 +34,7 @@ func main() {
 	
 	godotenv.Load()
 	dbURL := os.Getenv("DB_URL")
+	jwtSecret := os.Getenv("JWT_SECRET_KEY")
 
 	db, err := sql.Open("postgres", dbURL)
 	if err != nil {
@@ -44,7 +46,8 @@ func main() {
 	conf := apiConfig{
 		DBQ: dbQueries,
 		Platform: os.Getenv("PLATFORM"),
-		}
+		JWTSecret: jwtSecret,
+	}
 
 	appHandler := http.StripPrefix("/app/", http.FileServer(http.Dir(servFiles + "/app")))
 	appAssetsHandler := http.StripPrefix("/app/assets/", http.FileServer(http.Dir(servFiles + "/app/assets")))
@@ -66,6 +69,8 @@ func main() {
 	sMux.Handle("POST /api/login",          loginUserHandler)
 	sMux.HandleFunc("GET /admin/metrics",   conf.adminHandler)
 	sMux.HandleFunc("POST /admin/reset",    conf.adminResetHandler)
+	sMux.HandleFunc("POST /api/refresh",    conf.RefreshToken)
+	sMux.HandleFunc("POST /api/revoke",     conf.RevokeToken)
 
 	s := &http.Server{
 		Addr: ":8080",
