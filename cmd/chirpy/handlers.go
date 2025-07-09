@@ -4,6 +4,7 @@ import (
 	"log"
 	"fmt"
 	"strings"
+	"sort"
 	"time"
 	"errors"
 	"net/http"
@@ -546,10 +547,41 @@ func (a *apiConfig) GetAChirpHandler(w http.ResponseWriter, r *http.Request) {
 }
 
 func (a *apiConfig) GetAllChirpsHandler(w http.ResponseWriter, r *http.Request) {
-	
-	chirps, err := a.DBQ.GetAllChirps(r.Context())
-	if somethingError(err, w) {
-		return
+
+	authorID := r.URL.Query().Get("author_id")
+	var chirps []database.Chirp
+	var err error
+	if authorID == "" {
+		chirps, err = a.DBQ.GetAllChirps(r.Context())
+		if somethingError(err, w) {
+			log.Printf("GetAllChirps: %s", err)
+			return
+		}
+	} else {
+		uid, err := uuid.Parse(authorID)
+		if err != nil {
+			w.WriteHeader(http.StatusBadRequest)
+			_, err = w.Write([]byte(`"error":"invalid author id"`))
+			if err != nil {
+				log.Fatal(err)
+			}
+		}
+		chirps, err = a.DBQ.GetAllChirpsByUser(r.Context(), uid)
+		if somethingError(err, w) {
+			log.Printf("GetAllChirps: %s", err)
+			return
+		}
+	}
+
+	orderBy := r.URL.Query().Get("sort")
+
+	if orderBy == "desc" {
+		sort.Slice(
+			chirps, 
+			func(i, j int) bool {
+				return chirps[i].CreatedAt.After(chirps[j].CreatedAt)
+			},
+		)
 	}
 
 	jData, err := json.Marshal(&chirps)
