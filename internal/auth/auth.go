@@ -36,6 +36,21 @@ func GetBearerToken(header http.Header) (string, error) {
 	return token, nil
 }
 
+func GetAPIKey(header http.Header) (string, error) {
+	apiKey := header.Get("Authorization")
+	if apiKey == "" {
+		return "", fmt.Errorf("Authorization header not found")
+	}
+
+	key, ok := strings.CutPrefix(apiKey, "ApiKey ")
+	if !ok {
+		return "", fmt.Errorf("Unable to find 'ApiKey ', prefix")
+	}
+	return key, nil
+
+
+}
+
 func HashPassword(password string) (string, error) {
 	hash, err := bcrypt.GenerateFromPassword([]byte(password), 12)
 	if err != nil {

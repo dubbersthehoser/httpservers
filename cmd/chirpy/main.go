@@ -22,6 +22,7 @@ type apiConfig struct {
 	DBQ *database.Queries
 	Platform string
 	JWTSecret string
+	PolkaKey string
 }
 
 func main() {
@@ -35,6 +36,7 @@ func main() {
 	godotenv.Load()
 	dbURL := os.Getenv("DB_URL")
 	jwtSecret := os.Getenv("JWT_SECRET_KEY")
+	polkaKey := os.Getenv("POLKA_KEY")
 
 	db, err := sql.Open("postgres", dbURL)
 	if err != nil {
@@ -47,6 +49,7 @@ func main() {
 		DBQ: dbQueries,
 		Platform: os.Getenv("PLATFORM"),
 		JWTSecret: jwtSecret,
+		PolkaKey: polkaKey,
 	}
 
 	appHandler := http.StripPrefix("/app/", http.FileServer(http.Dir(servFiles + "/app")))
@@ -63,14 +66,17 @@ func main() {
 	sMux.Handle("/app/assets/",             conf.middlewareMetricsInc(appAssetsHandler))
 	sMux.Handle("GET /api/healthz",         conf.middlewareMetricsInc(readinessHandler))
 	sMux.HandleFunc("POST /api/users",      conf.addUserHandler)
+	sMux.HandleFunc("PUT /api/users",       conf.UpdateUserHandler)
 	sMux.Handle("POST /api/chirps",         createChirpHandler)
 	sMux.Handle("GET /api/chirps",          getAllChirpHandler)
 	sMux.Handle("GET /api/chirps/{ChirpID}", getAChirpHandler)
+	sMux.HandleFunc("DELETE /api/chirps/{ChirpID}", conf.RemoveChirpHandler)
 	sMux.Handle("POST /api/login",          loginUserHandler)
-	sMux.HandleFunc("GET /admin/metrics",   conf.adminHandler)
-	sMux.HandleFunc("POST /admin/reset",    conf.adminResetHandler)
 	sMux.HandleFunc("POST /api/refresh",    conf.RefreshToken)
 	sMux.HandleFunc("POST /api/revoke",     conf.RevokeToken)
+	sMux.HandleFunc("POST /api/polka/webhooks", conf.PolkaHandler)
+	sMux.HandleFunc("GET /admin/metrics",   conf.adminHandler)
+	sMux.HandleFunc("POST /admin/reset",    conf.adminResetHandler)
 
 	s := &http.Server{
 		Addr: ":8080",

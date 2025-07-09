@@ -23,6 +23,7 @@ type ReturnToUser struct {
 	Email string `json:"email"`
 	Token string `json:"token"`
 	RefreshToken string `json:"refresh_token"`
+	IsChirpyRed bool `json:"is_chirpy_red"`
 }
 
 func somethingError(err error, w http.ResponseWriter) bool {
@@ -33,6 +34,18 @@ func somethingError(err error, w http.ResponseWriter) bool {
 			log.Fatal(err)
 		}
 		log.Println(err)
+		return true
+	}
+	return false
+}
+
+func authError(err error, w http.ResponseWriter) bool {
+	if err != nil {
+		w.WriteHeader(http.StatusUnauthorized)
+		_, err := w.Write([]byte(`{"error":"Unauthorized"}`))
+		if err != nil {
+			log.Fatal(err)
+		}
 		return true
 	}
 	return false
@@ -135,6 +148,7 @@ func (a *apiConfig) addUserHandler(w http.ResponseWriter, r *http.Request) {
 		CreatedAt: user.CreatedAt,
 		UpdatedAt: user.UpdatedAt,
 		Email: user.Email,
+		IsChirpyRed: user.IsChirpyRed,
 	}
 
 	jdata, err := json.Marshal(&ruser)
@@ -144,6 +158,186 @@ func (a *apiConfig) addUserHandler(w http.ResponseWriter, r *http.Request) {
 	}
 
 	w.WriteHeader(http.StatusCreated)
+	_, err = w.Write(jdata)
+	if err != nil {
+		log.Fatal(err)
+	}
+}
+
+func (a *apiConfig) RemoveChirpHandler(w http.ResponseWriter, r *http.Request) {
+	
+	token, err := auth.GetBearerToken(r.Header)
+	if err != nil {
+		w.WriteHeader(http.StatusUnauthorized)
+		_, _ = w.Write([]byte("What Token?"))
+		log.Printf("remove chirp: %s", err)
+		return
+	}
+
+	uid, err := auth.ValidateJWT(token, a.JWTSecret)
+	if err != nil {
+		w.WriteHeader(http.StatusForbidden)
+		log.Printf("remove chirp: %s", err)
+		return
+	}
+
+	chirpID := r.PathValue("ChirpID")
+
+	id, err := uuid.Parse(chirpID)
+	if err != nil {
+		w.WriteHeader(http.StatusInternalServerError)
+		log.Printf("remove chirp: %s", err)
+		return
+	}
+
+	chrip, err := a.DBQ.GetAChirp(r.Context(), id)
+	if errors.Is(err, sql.ErrNoRows) {
+		w.WriteHeader(http.StatusNotFound)
+		log.Printf("remove chirp: %s", err)
+		return
+	}
+
+	if chrip.UserID.String() != uid.String() {
+		w.WriteHeader(http.StatusForbidden)
+		log.Printf("remove chirp: %s != %s", chrip.UserID, uid)
+		return
+	}
+
+	err = a.DBQ.DeleteChirp(r.Context(), id)
+	if err != nil {
+		w.WriteHeader(http.StatusNotFound)
+		log.Printf("remove chirp: %s", err)
+		return
+	}
+
+	w.WriteHeader(http.StatusNoContent)
+	return
+		
+}
+
+func (a *apiConfig) PolkaHandler(w http.ResponseWriter, r *http.Request) {
+
+
+	apikey, err := auth.GetAPIKey(r.Header)
+	if err != nil {
+		w.WriteHeader(http.StatusUnauthorized)
+		return
+	}
+
+	if a.PolkaKey != apikey {
+		w.WriteHeader(http.StatusUnauthorized)
+		return
+	}
+
+
+	type params struct {
+		Event string `json:"event"`
+		Data struct {
+			UserID string `json:"user_id"`
+		} `json:"data"`
+	}
+
+	var p params
+	decoder := json.NewDecoder(r.Body)
+	err = decoder.Decode(&p)
+	if somethingError(err, w) {
+		log.Printf("Polka: %s", err)
+	}
+
+	if p.Event != "user.upgraded" {
+		w.WriteHeader(http.StatusNoContent)
+		return
+	}
+
+	uid, err := uuid.Parse(p.Data.UserID)
+	if somethingError(err, w) {
+		log.Printf("Polka: %s", err)
+		return
+	}
+
+	err = a.DBQ.SetUserToRed(r.Context(), uid)
+	if err != nil {
+		w.WriteHeader(http.StatusNotFound)
+		return
+	}
+	w.WriteHeader(http.StatusNoContent)
+
+}
+
+
+func (a *apiConfig) UpdateUserHandler(w http.ResponseWriter, r *http.Request) {
+	
+	// Parse Body
+	type params struct{
+		Password string `json:"password"`
+		Email string `json:"email"`
+	}
+
+	p := params{}
+	decoder := json.NewDecoder(r.Body)
+	err := decoder.Decode(&p)
+	if somethingError(err, w) {
+		log.Printf("unable to decode: %s", r.Body)
+		return
+	}
+
+	// Get JWT Bearer
+	token, err := auth.GetBearerToken(r.Header)
+	if err != nil {
+		log.Printf("Invalid Token in Header: %s", r.Header.Get("Authorization"))
+		w.WriteHeader(http.StatusUnauthorized)
+		_, err := w.Write([]byte(`{"error":"Unauthorized"}`))
+		if err != nil {
+			log.Fatal(err)
+		}
+		return
+	}
+
+	// Authorize User
+	uid, err := auth.ValidateJWT(token, a.JWTSecret)
+	if err != nil {
+		w.WriteHeader(http.StatusUnauthorized)
+		_, err := w.Write([]byte(`{"error":"Unauthorized"}`))
+		if err != nil {
+			log.Fatal(err)
+		}
+		return
+	}
+
+	// Hash Password
+	passhash, err := auth.HashPassword(p.Password)
+	if somethingError(err, w) {
+		log.Printf("unable to hash password: %s", p.Password)
+		return
+	}
+
+	// Update User
+	qParams := database.UpdateUserEmailAndPasswordParams{
+		ID: uid,
+		HashedPassword: passhash,
+		Email: p.Email,
+	}
+	user, err := a.DBQ.UpdateUserEmailAndPassword(r.Context(), qParams)
+	if somethingError(err, w) {
+		log.Printf("Faild to update user: %#v", qParams)
+	}
+	
+	// Return Updated User
+	ruser := ReturnToUser{
+		ID: user.ID,
+		CreatedAt: user.CreatedAt,
+		UpdatedAt: user.UpdatedAt,
+		Email: user.Email,
+		IsChirpyRed: user.IsChirpyRed,
+	}
+
+	jdata, err := json.Marshal(&ruser)
+	if somethingError(err, w) {
+		log.Printf("unable to marshal user json: %#v", ruser)
+		return
+	}
+
+	w.WriteHeader(http.StatusOK)
 	_, err = w.Write(jdata)
 	if err != nil {
 		log.Fatal(err)
@@ -227,6 +421,7 @@ func (a *apiConfig) LoginUserHandler(w http.ResponseWriter, r *http.Request) {
 		Email: user.Email,
 		Token: token,
 		RefreshToken: refreshToken,
+		IsChirpyRed: user.IsChirpyRed,
 	}
 
 	jData, err := json.Marshal(&ruser)
@@ -295,6 +490,7 @@ func (a *apiConfig) RefreshToken(w http.ResponseWriter, r *http.Request) {
 		log.Fatal(err)
 	}
 }
+
 func (a *apiConfig) RevokeToken(w http.ResponseWriter, r *http.Request) {
 	refreshToken, err := auth.GetBearerToken(r.Header)
 	if somethingError(err, w) {
