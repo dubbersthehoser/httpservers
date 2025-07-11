@@ -29,4 +29,12 @@ Install Goose for database migrations
 
 Once your Postgres database is up and its connection string is set in `.env`, run `./gooser.sh up` to migrated the database for server use.
 
+## Building and Running Chirpy
 
+`go build ./cmd/chirpy`
+
+Chirpy will listen to port 8080
+
+# Endpoints
+
+Go to `./docs/endpoints.md`

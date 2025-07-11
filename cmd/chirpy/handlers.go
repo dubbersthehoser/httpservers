@@ -17,16 +17,6 @@ import (
 	"github.com/dubbersthehoser/httpserver/internal/auth"
 )
 
-type ReturnToUser struct {
-	ID uuid.UUID `json:"id"`
-	CreatedAt time.Time `json:"created_at"`
-	UpdatedAt time.Time `json:"updated_at"`
-	Email string `json:"email"`
-	Token string `json:"token"`
-	RefreshToken string `json:"refresh_token"`
-	IsChirpyRed bool `json:"is_chirpy_red"`
-}
-
 func somethingError(err error, w http.ResponseWriter) bool {
 	if err != nil {
 		w.WriteHeader(http.StatusInternalServerError)
@@ -65,159 +55,20 @@ func fatalError(err error, w http.ResponseWriter) bool {
 	return false
 }
 
+/****************************
+	MISC HANDLERS
+*****************************/
 
-func (a *apiConfig) adminHandler(w http.ResponseWriter, r *http.Request) {
-	r.Header.Add("Content-Type", "text/html; charset=utf-8")
+func ReadinessHandler(w http.ResponseWriter, r *http.Request) {
+	r.Header.Add("Content-Type",  "text/plain; charset=utf-8")
 	w.WriteHeader(http.StatusOK)
-	body := `
-<html>
-  <body>
-    <h1>Welcome, Chirpy Admin</h1>
-    <p>Chirpy has been visited %d times!</p>
-  </body>
-</html>
-`
-	_, err := w.Write([]byte(fmt.Sprintf(body, a.fileserverHits.Load())))
+	_, err := w.Write([]byte("OK"))
 	if err != nil {
 		log.Fatal(err)
 	}
-}
-
-func (a *apiConfig) adminResetHandler(w http.ResponseWriter, r *http.Request) {
-
-	var err error
-	if a.Platform != "dev" {
-		w.WriteHeader(http.StatusForbidden)
-		_, err = w.Write([]byte("Metrics and Database Reset: Unsuccsessful: Forbidden"))
-		if err != nil {
-			log.Fatal(err)
-		}
-		return
-	}
-
-
-	_ = a.fileserverHits.Swap(0)
-
-	err = a.DBQ.DeleteAllUsers(r.Context())
-	if err != nil {
-		log.Fatal(err)
-	}
-
-	r.Header.Add("Content-Type", "text/plain; charset=utf-8")
-	w.WriteHeader(http.StatusOK)
-	_, err = w.Write([]byte("Metrics and Database Reset: Succsessful"))
-	if err != nil {
-		log.Fatal(err)
-	}
-}
-
-func (a *apiConfig) addUserHandler(w http.ResponseWriter, r *http.Request) {
-
-	type params struct { 
-		Email string `json:"email"`
-		Password string `json:"password"`
-	}
-	
-	p := params{}
-	decoder := json.NewDecoder(r.Body)
-	err := decoder.Decode(&p)
-	if somethingError(err, w) {
-		log.Printf("unable to decode: %s", r.Body)
-		return
-	}
-
-	passhash, err := auth.HashPassword(p.Password)
-	if somethingError(err, w) {
-		log.Printf("unable to hash password: %s", p.Password)
-		return
-	}
-
-	qParams := database.CreateUserParams{
-		Email: p.Email,
-		HashedPassword: passhash,
-
-	}
-
-	user, err := a.DBQ.CreateUser(r.Context(), qParams)
-	if somethingError(err, w) {
-		log.Printf("unable to create user: %#v", err)
-		return
-	}
-
-	ruser := ReturnToUser{
-		ID: user.ID,
-		CreatedAt: user.CreatedAt,
-		UpdatedAt: user.UpdatedAt,
-		Email: user.Email,
-		IsChirpyRed: user.IsChirpyRed,
-	}
-
-	jdata, err := json.Marshal(&ruser)
-	if somethingError(err, w) {
-		log.Printf("unable to marshal user json: %#v", ruser)
-		return
-	}
-
-	w.WriteHeader(http.StatusCreated)
-	_, err = w.Write(jdata)
-	if err != nil {
-		log.Fatal(err)
-	}
-}
-
-func (a *apiConfig) RemoveChirpHandler(w http.ResponseWriter, r *http.Request) {
-	
-	token, err := auth.GetBearerToken(r.Header)
-	if err != nil {
-		w.WriteHeader(http.StatusUnauthorized)
-		_, _ = w.Write([]byte("What Token?"))
-		log.Printf("remove chirp: %s", err)
-		return
-	}
-
-	uid, err := auth.ValidateJWT(token, a.JWTSecret)
-	if err != nil {
-		w.WriteHeader(http.StatusForbidden)
-		log.Printf("remove chirp: %s", err)
-		return
-	}
-
-	chirpID := r.PathValue("ChirpID")
-
-	id, err := uuid.Parse(chirpID)
-	if err != nil {
-		w.WriteHeader(http.StatusInternalServerError)
-		log.Printf("remove chirp: %s", err)
-		return
-	}
-
-	chrip, err := a.DBQ.GetAChirp(r.Context(), id)
-	if errors.Is(err, sql.ErrNoRows) {
-		w.WriteHeader(http.StatusNotFound)
-		log.Printf("remove chirp: %s", err)
-		return
-	}
-
-	if chrip.UserID.String() != uid.String() {
-		w.WriteHeader(http.StatusForbidden)
-		log.Printf("remove chirp: %s != %s", chrip.UserID, uid)
-		return
-	}
-
-	err = a.DBQ.DeleteChirp(r.Context(), id)
-	if err != nil {
-		w.WriteHeader(http.StatusNotFound)
-		log.Printf("remove chirp: %s", err)
-		return
-	}
-
-	w.WriteHeader(http.StatusNoContent)
-	return
-		
 }
 
 func (a *apiConfig) PolkaHandler(w http.ResponseWriter, r *http.Request) {
-
 
 	apikey, err := auth.GetAPIKey(r.Header)
 	if err != nil {
@@ -265,6 +116,135 @@ func (a *apiConfig) PolkaHandler(w http.ResponseWriter, r *http.Request) {
 
 }
 
+/****************************
+	ADMIN HANDLERS
+*****************************/
+
+func (a *apiConfig) AdminHandler(w http.ResponseWriter, r *http.Request) {
+	r.Header.Add("Content-Type", "text/html; charset=utf-8")
+
+	if a.Platform != "dev" {
+		w.WriteHeader(http.StatusForbidden)
+		_, err := w.Write([]byte("<html><body><h1>Forbidden</h1></body></html>"))
+		if err != nil {
+			log.Fatal(err)
+		}
+		return
+	}
+
+
+	w.WriteHeader(http.StatusOK)
+	body := `
+<html>
+  <body>
+    <h1>Welcome, Chirpy Admin</h1>
+    <p>Chirpy has been visited %d times!</p>
+  </body>
+</html>
+`
+	_, err := w.Write([]byte(fmt.Sprintf(body, a.fileserverHits.Load())))
+	if err != nil {
+		log.Fatal(err)
+	}
+	return
+}
+
+func (a *apiConfig) AdminResetHandler(w http.ResponseWriter, r *http.Request) {
+	r.Header.Add("Content-Type", "text/plain; charset=utf-8")
+	var err error
+	if a.Platform != "dev" {
+		w.WriteHeader(http.StatusForbidden)
+		_, err = w.Write([]byte("Metrics and Database Reset: Unsuccsessful: Forbidden"))
+		if err != nil {
+			log.Fatal(err)
+		}
+		return
+	}
+
+	_ = a.fileserverHits.Swap(0)
+
+	err = a.DBQ.DeleteAllUsers(r.Context())
+	if err != nil {
+		log.Fatal(err)
+	}
+
+	r.Header.Add("Content-Type", "text/plain; charset=utf-8")
+	w.WriteHeader(http.StatusOK)
+	_, err = w.Write([]byte("Metrics and Database Reset: Succsessful"))
+	if err != nil {
+		log.Fatal(err)
+	}
+}
+
+
+/****************************
+	USER HANDLERS
+*****************************/
+
+type ReturnToUser struct {
+	ID uuid.UUID `json:"id"`
+	CreatedAt time.Time `json:"created_at"`
+	UpdatedAt time.Time `json:"updated_at"`
+	Email string `json:"email"`
+	IsChirpyRed bool `json:"is_chirpy_red"`
+}
+
+
+func (a *apiConfig) AddUserHandler(w http.ResponseWriter, r *http.Request) {
+	// POST /api/users
+	type params struct { 
+		Email string `json:"email"`
+		Password string `json:"password"`
+	}
+	
+	p := params{}
+	decoder := json.NewDecoder(r.Body)
+	err := decoder.Decode(&p)
+	if somethingError(err, w) {
+		log.Printf("unable to decode: %s", r.Body)
+		return
+	}
+
+	// hash password
+	passhash, err := auth.HashPassword(p.Password)
+	if somethingError(err, w) {
+		log.Printf("unable to hash password: %s", p.Password)
+		return
+	}
+
+	// add user to database
+	qParams := database.CreateUserParams{
+		Email: p.Email,
+		HashedPassword: passhash,
+
+	}
+
+	user, err := a.DBQ.CreateUser(r.Context(), qParams)
+	if somethingError(err, w) {
+		log.Printf("unable to create user: %#v", err)
+		return
+	}
+
+	ruser := ReturnToUser{
+		ID: user.ID,
+		CreatedAt: user.CreatedAt,
+		UpdatedAt: user.UpdatedAt,
+		Email: user.Email,
+		IsChirpyRed: user.IsChirpyRed,
+	}
+
+	jdata, err := json.Marshal(&ruser)
+	if somethingError(err, w) {
+		log.Printf("unable to marshal user json: %#v", ruser)
+		return
+	}
+
+	w.WriteHeader(http.StatusCreated)
+	_, err = w.Write(jdata)
+	if err != nil {
+		log.Fatal(err)
+	}
+}
 
 func (a *apiConfig) UpdateUserHandler(w http.ResponseWriter, r *http.Request) {
 	
@@ -345,11 +325,16 @@ func (a *apiConfig) UpdateUserHandler(w http.ResponseWriter, r *http.Request) {
 	}
 }
 
+
+
+/***************************
+	AUTH HANDLERS
+****************************/
+
 func (a *apiConfig) LoginUserHandler(w http.ResponseWriter, r *http.Request) {
 	type params struct {
 		Email string `json:"email"`
 		Password string `json:"password"`
-	//	ExpiresInSeconds int64 `json:"expires_in_seconds"`
 	}
 
 	p := params{}
@@ -384,13 +369,6 @@ func (a *apiConfig) LoginUserHandler(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-
-	//expires := time.Duration(p.ExpiresInSeconds)
-	//if expires == 0 || expires > time.Hour {
-	//	expires = time.Hour
-	//}
-
-
 	// Create JWT
 	jwtExpires := time.Hour
 	token, err := auth.MakeJWT(user.ID, a.JWTSecret, jwtExpires)
@@ -415,7 +393,17 @@ func (a *apiConfig) LoginUserHandler(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	ruser := ReturnToUser{
+	type ReturnLoginUser struct {
+		ID uuid.UUID `json:"id"`
+		CreatedAt time.Time `json:"created_at"`
+		UpdatedAt time.Time `json:"updated_at"`
+		Email string `json:"email"`
+		Token string `json:"token"`
+		RefreshToken string `json:"refresh_token"`
+		IsChirpyRed bool `json:"is_chirpy_red"`
+	}
+
+	ruser := ReturnLoginUser{
 		ID: user.ID,
 		CreatedAt: user.CreatedAt,
 		UpdatedAt: user.UpdatedAt,
@@ -505,95 +493,10 @@ func (a *apiConfig) RevokeToken(w http.ResponseWriter, r *http.Request) {
 	w.WriteHeader(http.StatusNoContent)
 }
 
-func (a *apiConfig) GetAChirpHandler(w http.ResponseWriter, r *http.Request) {
-	
-	chirpID := r.PathValue("ChirpID")
 
-	log.Println(chirpID)
-
-	chirpUUID, err := uuid.Parse(chirpID)
-	if err != nil {
-		w.WriteHeader(http.StatusBadRequest)
-		_, err = w.Write([]byte(`{"error": "Invalid chirp id"}`))
-		if err != nil {
-			log.Fatal(err)
-		}
-		return
-	}
-
-
-	chirp, err := a.DBQ.GetAChirp(r.Context(), chirpUUID)
-	if errors.Is(err, sql.ErrNoRows) {
-		w.WriteHeader(http.StatusNotFound)
-		_, err = w.Write([]byte(`{"error": "Chirp id not found"}`))
-		if err != nil {
-			log.Fatal(err)
-		}
-		return
-	} else if err != nil {
-		log.Fatal(err)
-	}
-
-	jData, err := json.Marshal(&chirp)
-	if err != nil {
-		log.Fatal(err)
-	}
-
-	w.WriteHeader(http.StatusOK)
-	_, err = w.Write(jData)
-	if err != nil {
-		log.Fatal(err)
-	}
-}
-
-func (a *apiConfig) GetAllChirpsHandler(w http.ResponseWriter, r *http.Request) {
-
-	authorID := r.URL.Query().Get("author_id")
-	var chirps []database.Chirp
-	var err error
-	if authorID == "" {
-		chirps, err = a.DBQ.GetAllChirps(r.Context())
-		if somethingError(err, w) {
-			log.Printf("GetAllChirps: %s", err)
-			return
-		}
-	} else {
-		uid, err := uuid.Parse(authorID)
-		if err != nil {
-			w.WriteHeader(http.StatusBadRequest)
-			_, err = w.Write([]byte(`"error":"invalid author id"`))
-			if err != nil {
-				log.Fatal(err)
-			}
-		}
-		chirps, err = a.DBQ.GetAllChirpsByUser(r.Context(), uid)
-		if somethingError(err, w) {
-			log.Printf("GetAllChirps: %s", err)
-			return
-		}
-	}
-
-	orderBy := r.URL.Query().Get("sort")
-
-	if orderBy == "desc" {
-		sort.Slice(
-			chirps, 
-			func(i, j int) bool {
-				return chirps[i].CreatedAt.After(chirps[j].CreatedAt)
-			},
-		)
-	}
-
-	jData, err := json.Marshal(&chirps)
-	if err != nil {
-		log.Fatal(err)
-	}
-	w.WriteHeader(http.StatusOK)
-	_, err = w.Write(jData)
-	if err != nil {
-		log.Fatal(err)
-	}
-}
+/******************************
+	CHRIPS HANDLERS
+*******************************/
 
 func (a *apiConfig) CreateChirpHandler(w http.ResponseWriter, r *http.Request) {
 
@@ -666,12 +569,143 @@ func (a *apiConfig) CreateChirpHandler(w http.ResponseWriter, r *http.Request) {
 	}
 }
 
-func ReadinessHandler(w http.ResponseWriter, r *http.Request) {
-	r.Header.Add("Content-Type",  "text/plain; charset=utf-8")
+func (a *apiConfig) GetAChirpHandler(w http.ResponseWriter, r *http.Request) {
+	
+	chirpID := r.PathValue("ChirpID")
+
+	log.Println(chirpID)
+
+	chirpUUID, err := uuid.Parse(chirpID)
+	if err != nil {
+		w.WriteHeader(http.StatusBadRequest)
+		_, err = w.Write([]byte(`{"error": "Invalid chirp id"}`))
+		if err != nil {
+			log.Fatal(err)
+		}
+		return
+	}
+
+
+	chirp, err := a.DBQ.GetAChirp(r.Context(), chirpUUID)
+	if errors.Is(err, sql.ErrNoRows) {
+		w.WriteHeader(http.StatusNotFound)
+		_, err = w.Write([]byte(`{"error": "Chirp id not found"}`))
+		if err != nil {
+			log.Fatal(err)
+		}
+		return
+	} else if err != nil {
+		log.Fatal(err)
+	}
+
+	jData, err := json.Marshal(&chirp)
+	if err != nil {
+		log.Fatal(err)
+	}
+
 	w.WriteHeader(http.StatusOK)
-	_, err := w.Write([]byte("OK"))
+	_, err = w.Write(jData)
 	if err != nil {
 		log.Fatal(err)
 	}
 }
 
+func (a *apiConfig) RemoveChirpHandler(w http.ResponseWriter, r *http.Request) {
+	
+	token, err := auth.GetBearerToken(r.Header)
+	if err != nil {
+		w.WriteHeader(http.StatusUnauthorized)
+		_, _ = w.Write([]byte("What Token?"))
+		log.Printf("remove chirp: %s", err)
+		return
+	}
+
+	uid, err := auth.ValidateJWT(token, a.JWTSecret)
+	if err != nil {
+		w.WriteHeader(http.StatusForbidden)
+		log.Printf("remove chirp: %s", err)
+		return
+	}
+
+	chirpID := r.PathValue("ChirpID")
+
+	id, err := uuid.Parse(chirpID)
+	if err != nil {
+		w.WriteHeader(http.StatusInternalServerError)
+		log.Printf("remove chirp: %s", err)
+		return
+	}
+
+	chrip, err := a.DBQ.GetAChirp(r.Context(), id)
+	if errors.Is(err, sql.ErrNoRows) {
+		w.WriteHeader(http.StatusNotFound)
+		log.Printf("remove chirp: %s", err)
+		return
+	}
+
+	if chrip.UserID.String() != uid.String() {
+		w.WriteHeader(http.StatusForbidden)
+		log.Printf("remove chirp: %s != %s", chrip.UserID, uid)
+		return
+	}
+
+	err = a.DBQ.DeleteChirp(r.Context(), id)
+	if err != nil {
+		w.WriteHeader(http.StatusNotFound)
+		log.Printf("remove chirp: %s", err)
+		return
+	}
+
+	w.WriteHeader(http.StatusNoContent)
+	return
+		
+}
+
+func (a *apiConfig) GetAllChirpsHandler(w http.ResponseWriter, r *http.Request) {
+
+	authorID := r.URL.Query().Get("author_id")
+	var chirps []database.Chirp
+	var err error
+	if authorID == "" {
+		chirps, err = a.DBQ.GetAllChirps(r.Context())
+		if somethingError(err, w) {
+			log.Printf("GetAllChirps: %s", err)
+			return
+		}
+	} else {
+		uid, err := uuid.Parse(authorID)
+		if err != nil {
+			w.WriteHeader(http.StatusBadRequest)
+			_, err = w.Write([]byte(`"error":"invalid author id"`))
+			if err != nil {
+				log.Fatal(err)
+			}
+		}
+		chirps, err = a.DBQ.GetAllChirpsByUser(r.Context(), uid)
+		if somethingError(err, w) {
+			log.Printf("GetAllChirps: %s", err)
+			return
+		}
+	}
+
+	orderBy := r.URL.Query().Get("sort")
+
+	if orderBy == "desc" {
+		sort.Slice(
+			chirps, 
+			func(i, j int) bool {
+				return chirps[i].CreatedAt.After(chirps[j].CreatedAt)
+			},
+		)
+	}
+
+	jData, err := json.Marshal(&chirps)
+	if err != nil {
+		log.Fatal(err)
+	}
+	w.WriteHeader(http.StatusOK)
+	_, err = w.Write(jData)
+	if err != nil {
+		log.Fatal(err)
+	}
+}
